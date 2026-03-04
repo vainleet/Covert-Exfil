@@ -1,0 +1,15 @@
+[package]
+name = "receiver"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+covert-core = { path = "../core" }
+hickory-server = "0.25"
+hickory-proto  = "0.25"
+pnet           = "0.35"
+anyhow         = "1.0"
+tokio          = { version = "1", features = ["full", "signal", "rt-multi-thread"] }
+async-trait    = "0.1"
+flate2 = "1.0"
+data-encoding = "2.10.0"
