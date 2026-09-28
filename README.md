@@ -36,7 +36,7 @@ This project implements a simple but effective **covert channel** for exfiltrati
 ## Installation
 
 ```bash
-git clone https://github.com/yourusername/covert-exfil.git
+git clone https://github.com/vainleet/covert-exfil.git
 cd covert-exfil
 ```
 ## Usage
